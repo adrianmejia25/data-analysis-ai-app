@@ -13,241 +13,131 @@ import os
 import pandas as pd
 
 
-# ---------------------------------------------------------------------------
-# Funciones privadas de limpieza y detección de tipos
-# ---------------------------------------------------------------------------
-
-def _limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Aplica limpieza básica al DataFrame recibido."""
-    # Eliminar filas completamente vacías (todas sus celdas son NaN)
-    df = df.dropna(how="all")
-
-    # Quitar espacios en blanco al inicio y final de los nombres de columna
-    df.columns = [col.strip() if isinstance(col, str) else col for col in df.columns]
-
-    return df
-
-
 def _detectar_tipos(df: pd.DataFrame) -> dict:
-    """
-    Detecta automáticamente el tipo semántico de cada columna:
-    'numeric', 'temporal' o 'categorical'.
-
-    Retorna un dict {nombre_columna: tipo_string}.
-    """
+    # Clasificar cada columna como 'numeric', 'temporal' o 'categorical'
     tipos = {}
-    for col in df.columns:
-        # Intentar convertir a fecha si no es ya de tipo datetime
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            tipos[col] = "temporal"
-        elif pd.api.types.is_numeric_dtype(df[col]):
-            tipos[col] = "numeric"
+    for columna in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[columna]):
+            tipos[columna] = "temporal"
+        elif pd.api.types.is_numeric_dtype(df[columna]):
+            tipos[columna] = "numeric"
         else:
-            # Intentar parsear como fecha (p. ej. columnas con strings de fecha)
+            # Intentar convertir a fecha para detectar columnas de texto con fechas
             try:
-                pd.to_datetime(df[col], errors="raise")
-                tipos[col] = "temporal"
+                pd.to_datetime(df[columna], errors="raise")
+                tipos[columna] = "temporal"
             except (ValueError, TypeError):
                 # Si no es numérica ni temporal, es categórica
-                tipos[col] = "categorical"
+                tipos[columna] = "categorical"
     return tipos
 
 
-def _calcular_nulos(df: pd.DataFrame) -> dict:
-    """
-    Calcula el porcentaje de valores nulos por columna.
-
-    Retorna un dict {nombre_columna: porcentaje_nulos (float)}.
-    Nota: el contrato original pide 'null count'; aquí devolvemos el conteo
-    entero para respetar el contrato, y agregamos el porcentaje internamente.
-    """
-    # Conteo de nulos por columna (entero, para el contrato estándar)
-    return df.isnull().sum().to_dict()
+def _limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    # Eliminar filas completamente vacías (todas sus celdas son NaN)
+    df = df.dropna(how="all")
+    # Eliminar filas duplicadas (mismo valor en todas las columnas)
+    df = df.drop_duplicates()
+    # Quitar espacios en blanco en los nombres de las columnas
+    df.columns = [col.strip() if isinstance(col, str) else col for col in df.columns]
+    return df
 
 
-def _construir_resultado(df: pd.DataFrame) -> dict:
-    """Construye el dict estándar a partir de un DataFrame ya limpio."""
+def cargar_csv(ruta: str) -> dict:
+    # Verificar que el archivo existe antes de intentar abrirlo
+    if not os.path.exists(ruta):
+        raise FileNotFoundError(f"No se encontró el archivo: {ruta}")
+
+    _, ext = os.path.splitext(ruta)
+    if ext.lower() != ".csv":
+        raise ValueError(f"Esta función solo acepta archivos .csv, se recibió: {ext}")
+
+    try:
+        # Cargar el archivo CSV con separador de coma (estándar)
+        data_frame = pd.read_csv(ruta)
+    except pd.errors.EmptyDataError:
+        raise ValueError(f"El archivo CSV está vacío: {ruta}")
+    except Exception:
+        # Algunos CSV usan punto y coma como separador, se intenta de nuevo
+        try:
+            data_frame = pd.read_csv(ruta, sep=";")
+        except Exception as e:
+            raise ValueError(f"No se pudo leer el archivo CSV '{ruta}': {e}")
+
+    data_frame = _limpiar_dataframe(data_frame)
+
     return {
-        "df": df,
-        "dtypes": _detectar_tipos(df),
-        "nulls": _calcular_nulos(df),
-        "shape": df.shape,
+        "df": data_frame,
+        "dtypes": _detectar_tipos(data_frame),
+        "nulls": data_frame.isnull().sum().to_dict(),
+        "shape": data_frame.shape
     }
 
 
-# ---------------------------------------------------------------------------
-# Funciones públicas
-# ---------------------------------------------------------------------------
-
-def load_csv(filepath: str) -> dict:
-    """
-    Load a CSV file and return the standard data contract dict.
-
-    Parameters
-    ----------
-    filepath : str
-        Absolute or relative path to the .csv file.
-
-    Returns
-    -------
-    dict
-        Keys: df (DataFrame), dtypes (dict), nulls (dict), shape (tuple).
-
-    Raises
-    ------
-    FileNotFoundError
-        Si el archivo no existe en la ruta indicada.
-    ValueError
-        Si la extensión no corresponde a un CSV o el archivo está corrupto.
-    """
-    # Verificar que el archivo existe antes de intentar cargarlo
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"No se encontró el archivo: {filepath}")
-
-    # Verificar que la extensión sea .csv
-    _, ext = os.path.splitext(filepath)
-    if ext.lower() != ".csv":
-        raise ValueError(
-            f"Formato no soportado '{ext}'. Esta función solo acepta archivos .csv"
-        )
-
-    try:
-        # Intentar cargar con separador estándar (coma)
-        df = pd.read_csv(filepath)
-    except pd.errors.EmptyDataError:
-        raise ValueError(f"El archivo CSV está vacío: {filepath}")
-    except pd.errors.ParserError as e:
-        # Algunos CSV usan punto y coma; intentar de nuevo con ese separador
-        try:
-            df = pd.read_csv(filepath, sep=";")
-        except Exception:
-            raise ValueError(f"No se pudo parsear el archivo CSV: {filepath}. Detalle: {e}")
-    except Exception as e:
-        raise ValueError(f"Error inesperado al leer el CSV '{filepath}': {e}")
-
-    # Aplicar limpieza básica
-    df = _limpiar_dataframe(df)
-
-    # Construir y retornar el diccionario estándar
-    return _construir_resultado(df)
-
-
-def load_excel(filepath: str, sheet_name: str = 0) -> dict:
-    """
-    Load an Excel file and return the standard data contract dict.
-
-    Parameters
-    ----------
-    filepath : str
-        Absolute or relative path to the .xlsx file.
-    sheet_name : str or int
-        Sheet to read. Defaults to the first sheet (0).
-
-    Returns
-    -------
-    dict
-        Keys: df (DataFrame), dtypes (dict), nulls (dict), shape (tuple).
-
-    Raises
-    ------
-    FileNotFoundError
-        Si el archivo no existe en la ruta indicada.
-    ValueError
-        Si la extensión no corresponde a Excel o el archivo está corrupto.
-    """
+def cargar_excel(ruta: str, hoja: str = 0) -> dict:
     # Verificar que el archivo existe
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"No se encontró el archivo: {filepath}")
+    if not os.path.exists(ruta):
+        raise FileNotFoundError(f"No se encontró el archivo: {ruta}")
 
-    # Verificar que la extensión sea .xlsx o .xls
-    _, ext = os.path.splitext(filepath)
+    _, ext = os.path.splitext(ruta)
     if ext.lower() not in (".xlsx", ".xls"):
-        raise ValueError(
-            f"Formato no soportado '{ext}'. Esta función solo acepta archivos .xlsx o .xls"
-        )
+        raise ValueError(f"Esta función solo acepta archivos .xlsx o .xls, se recibió: {ext}")
 
     try:
-        # Cargar la hoja indicada (por nombre o índice)
-        df = pd.read_excel(filepath, sheet_name=sheet_name)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"No se encontró el archivo: {filepath}")
+        # Cargar la hoja indicada del archivo Excel
+        data_frame = pd.read_excel(ruta, sheet_name=hoja)
     except ValueError as e:
-        # Ocurre cuando sheet_name no existe en el libro
-        raise ValueError(f"Hoja no encontrada en '{filepath}': {e}")
+        # Ocurre cuando el nombre de la hoja no existe en el archivo
+        raise ValueError(f"La hoja no existe en '{ruta}': {e}")
     except Exception as e:
-        raise ValueError(f"Error inesperado al leer el Excel '{filepath}': {e}")
+        raise ValueError(f"No se pudo leer el archivo Excel '{ruta}': {e}")
 
-    # Aplicar limpieza básica
-    df = _limpiar_dataframe(df)
+    data_frame = _limpiar_dataframe(data_frame)
 
-    # Construir y retornar el diccionario estándar
-    return _construir_resultado(df)
+    return {
+        "df": data_frame,
+        "dtypes": _detectar_tipos(data_frame),
+        "nulls": data_frame.isnull().sum().to_dict(),
+        "shape": data_frame.shape
+    }
 
 
-def load_file(filepath: str, sheet_name: str = 0) -> dict:
-    """
-    Detecta automáticamente el tipo de archivo por su extensión y lo carga.
-    Admite .csv, .xlsx y .xls.
-
-    Parameters
-    ----------
-    filepath : str
-        Ruta al archivo de datos.
-    sheet_name : str or int
-        Solo relevante para Excel. Hoja a leer (por defecto la primera).
-
-    Returns
-    -------
-    dict
-        Keys: df (DataFrame), dtypes (dict), nulls (dict), shape (tuple).
-    """
+def cargar_archivo(ruta: str, hoja: str = 0) -> dict:
     # Verificar que el archivo existe
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"No se encontró el archivo: {filepath}")
+    if not os.path.exists(ruta):
+        raise FileNotFoundError(f"No se encontró el archivo: {ruta}")
 
-    _, ext = os.path.splitext(filepath)
+    _, ext = os.path.splitext(ruta)
     ext = ext.lower()
 
     # Delegar a la función correspondiente según la extensión detectada
     if ext == ".csv":
-        return load_csv(filepath)
+        return cargar_csv(ruta)
     elif ext in (".xlsx", ".xls"):
-        return load_excel(filepath, sheet_name=sheet_name)
+        return cargar_excel(ruta, hoja=hoja)
     else:
-        raise ValueError(
-            f"Formato '{ext}' no soportado. Use archivos .csv, .xlsx o .xls"
-        )
+        raise ValueError(f"Formato '{ext}' no soportado. Use .csv, .xlsx o .xls")
 
 
-def summarize(data: dict) -> dict:
-    """
-    Generate a basic summary from a data contract dict.
-
-    Parameters
-    ----------
-    data : dict
-        A data contract dict as returned by load_csv or load_excel.
-
-    Returns
-    -------
-    dict
-        Keys: shape (tuple), dtypes (dict), nulls (dict),
-              columns (list[str]).
-    """
-    # Extraer el DataFrame del diccionario estándar
-    df: pd.DataFrame = data["df"]
-
-    # Calcular porcentaje de nulos para dar más contexto en el resumen
+def resumir(data: dict) -> dict:
+    df = data["df"]
     total_filas = df.shape[0]
+
+    # Calcular el porcentaje de nulos por columna para facilitar el análisis
     null_pct = {
-        col: round((count / total_filas) * 100, 2) if total_filas > 0 else 0.0
-        for col, count in data["nulls"].items()
+        col: round((conteo / total_filas) * 100, 2) if total_filas > 0 else 0.0
+        for col, conteo in data["nulls"].items()
     }
 
     return {
         "shape": data["shape"],
         "dtypes": data["dtypes"],
-        "nulls": data["nulls"],          # conteo absoluto (contrato estándar)
-        "null_pct": null_pct,            # porcentaje adicional para visualización
-        "columns": list(df.columns),
+        "nulls": data["nulls"],
+        "null_pct": null_pct,
+        "columns": list(df.columns)
     }
+
+# Aliases en inglés para compatibilidad con el resto del proyecto
+load_csv = cargar_csv
+load_excel = cargar_excel
+load_file = cargar_archivo
+summarize = resumir
