@@ -212,11 +212,32 @@ def seccion_estadisticas(data: dict) -> None:
     except Exception as e:
         st.error(f"Error al graficar distribución: {e}")
 
+    # --- Correlaciones fuertes automáticas (|r| > 0.7) ---
+    if len(columnas_numericas) >= 2:
+        st.subheader("Correlaciones Fuertes Detectadas")
+        try:
+            corr = data["df"][columnas_numericas].corr()
+            mensajes = []
+            # Recorrer triángulo superior para evitar duplicados
+            for i, col_a in enumerate(corr.columns):
+                for col_b in corr.columns[i + 1:]:
+                    r = corr.loc[col_a, col_b]
+                    if abs(r) > 0.7:
+                        direccion = "positiva" if r > 0 else "negativa"
+                        mensajes.append(f"Existe una fuerte correlación {direccion} (r={r:.2f}) entre **{col_a}** y **{col_b}**.")
+            if mensajes:
+                for msg in mensajes:
+                    st.info(msg)
+            else:
+                st.write("No se detectaron correlaciones fuertes (|r| > 0.7).")
+        except Exception as e:
+            st.error(f"Error al detectar correlaciones fuertes: {e}")
+
     # --- Detección de outliers ---
     st.subheader("Detección de Outliers")
     col1, col2 = st.columns(2)
     col_outlier = col1.selectbox("Columna:", columnas_numericas, key="outlier_col")
-    metodo = col2.selectbox("Método:", ["iqr", "zscore"], key="outlier_method")
+    metodo = col2.selectbox("Método:", ["iqr", "zscore", "isolation_forest"], key="outlier_method")
 
     try:
         mascara = outlier_detection(data, col_outlier, method=metodo)
@@ -253,39 +274,54 @@ def seccion_ml(data: dict) -> None:
 
     if st.button("Entrenar modelo", key="btn_train"):
         try:
-            # Dividir datos en entrenamiento y prueba
+            # Dividir los datos — el conjunto de entrenamiento y prueba son estrictamente separados
             X_train, X_test, y_train, y_test = split_data(data, target_column=target_col)
 
-            # Entrenar Random Forest
+            # Entrenar Random Forest solo sobre X_train
             modelo = train_model(X_train, y_train, model_type="random_forest")
 
-            # Evaluar el modelo
-            metricas = evaluate_model(modelo, X_test, y_test)
+            # Evaluar sobre X_test (datos que el modelo nunca vio)
+            metricas_test = evaluate_model(modelo, X_test, y_test)
+
+            # Calcular métricas sobre entrenamiento para comparar y detectar overfitting
+            metricas_train = evaluate_model(modelo, X_train, y_train)
 
             # Guardar en session_state para no reentrenar en cada interacción
             st.session_state["modelo"] = modelo
-            st.session_state["metricas"] = metricas
-            st.session_state["y_test"] = y_test
-            st.session_state["X_test"] = X_test
+            st.session_state["metricas"] = metricas_test
+            st.session_state["metricas_train"] = metricas_train
+            st.session_state["y_test"] = y_test.reset_index(drop=True)
+            st.session_state["y_pred"] = pd.Series(
+                modelo.predict(X_test), name="y_pred"
+            ).reset_index(drop=True)
             st.session_state["target_col"] = target_col
 
         except Exception as e:
             st.error(f"Error al entrenar el modelo: {e}")
 
-    # Mostrar métricas si el modelo ya fue entrenado
+    # Mostrar métricas si el modelo ya fue entrenado para esta columna objetivo
     if "metricas" in st.session_state and st.session_state.get("target_col") == target_col:
         metricas = st.session_state["metricas"]
-        y_test = st.session_state["y_test"]
-        X_test = st.session_state["X_test"]
-        modelo = st.session_state["modelo"]
+        metricas_train = st.session_state.get("metricas_train", {})
+        y_test_stored = st.session_state["y_test"]
+        y_pred_stored = st.session_state["y_pred"]
 
-        # Métricas en columnas
-        st.subheader("Métricas del Modelo")
+        # Métricas de prueba (conjunto que el modelo nunca vio)
+        st.subheader("Métricas — Conjunto de Prueba (test set)")
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("R²", metricas.get("r2", "—"))
-        col2.metric("RMSE", metricas.get("rmse", "—"))
-        col3.metric("MAE", metricas.get("mae", "—"))
-        col4.metric("MSE", metricas.get("mse", "—"))
+        col1.metric("R² (test)", metricas.get("r2", "—"))
+        col2.metric("RMSE (test)", metricas.get("rmse", "—"))
+        col3.metric("MAE (test)", metricas.get("mae", "—"))
+        col4.metric("MSE (test)", metricas.get("mse", "—"))
+
+        # Mostrar R² de entrenamiento junto al de prueba para detectar overfitting
+        r2_train = metricas_train.get("r2", None)
+        r2_test = metricas.get("r2", None)
+        if r2_train is not None and r2_test is not None:
+            diff = round(r2_train - r2_test, 4)
+            st.caption(f"R² entrenamiento: {r2_train} | R² prueba: {r2_test} | Diferencia: {diff}")
+            if diff > 0.1:
+                st.warning("El modelo muestra posible overfitting (R² entrenamiento muy superior al de prueba).")
 
         # Resumen de texto desde insights
         try:
@@ -294,11 +330,10 @@ def seccion_ml(data: dict) -> None:
         except Exception as e:
             st.error(f"Error al generar resumen del modelo: {e}")
 
-        # Gráfico real vs predicho
-        st.subheader("Valores Reales vs. Predichos")
+        # Gráfico real vs predicho — usar arrays ya almacenados con índices alineados
+        st.subheader("Valores Reales vs. Predichos (test set)")
         try:
-            y_pred = pd.Series(modelo.predict(X_test), index=y_test.index)
-            fig_pred = plot_model_results(y_test, y_pred)
+            fig_pred = plot_model_results(y_test_stored, y_pred_stored)
             st.pyplot(fig_pred)
         except Exception as e:
             st.error(f"Error al graficar predicciones: {e}")
@@ -330,10 +365,56 @@ def seccion_ml(data: dict) -> None:
     # Mostrar resultados de clustering si están disponibles
     if "df_clusters" in st.session_state:
         df_clusters = st.session_state["df_clusters"]
+        cols_num = df_clusters.select_dtypes(include=np.number).columns.tolist()
+        # Excluir la columna 'cluster' de las numéricas para análisis
+        cols_features = [c for c in cols_num if c != "cluster"]
 
         conteo = df_clusters["cluster"].value_counts().sort_index()
         st.write("**Distribución de clusters:**")
         st.bar_chart(conteo)
+
+        # Gráfico 2D de clusters usando las 2 primeras columnas numéricas
+        if len(cols_features) >= 2:
+            st.write("**Visualización 2D de clusters:**")
+            try:
+                import matplotlib.pyplot as plt
+                import matplotlib.cm as cm
+                col_x, col_y = cols_features[0], cols_features[1]
+                fig_cl, ax_cl = plt.subplots(figsize=(8, 5))
+                clusters_unicos = sorted(df_clusters["cluster"].dropna().unique())
+                colores = cm.tab10.colors
+                for i, cluster_id in enumerate(clusters_unicos):
+                    mascara = df_clusters["cluster"] == cluster_id
+                    ax_cl.scatter(
+                        df_clusters.loc[mascara, col_x],
+                        df_clusters.loc[mascara, col_y],
+                        label=f"Cluster {int(cluster_id)}",
+                        color=colores[i % len(colores)],
+                        alpha=0.7,
+                        edgecolor="white",
+                        linewidth=0.4,
+                    )
+                ax_cl.set_xlabel(col_x)
+                ax_cl.set_ylabel(col_y)
+                ax_cl.set_title(f"Clusters — {col_x} vs {col_y}")
+                ax_cl.legend()
+                plt.tight_layout()
+                st.pyplot(fig_cl)
+            except Exception as e:
+                st.error(f"Error al graficar clusters: {e}")
+
+        # Resumen automático: media de columnas numéricas por cluster
+        if cols_features:
+            st.write("**Características por cluster (media de columnas numéricas):**")
+            try:
+                resumen_clusters = (
+                    df_clusters.groupby("cluster")[cols_features]
+                    .mean()
+                    .round(2)
+                )
+                st.dataframe(resumen_clusters, use_container_width=True)
+            except Exception as e:
+                st.error(f"Error al calcular resumen de clusters: {e}")
 
         st.write("**Dataset con etiquetas de cluster:**")
         st.dataframe(df_clusters, use_container_width=True)

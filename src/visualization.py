@@ -53,7 +53,8 @@ def plot_distribution(data: dict, column: str) -> plt.Figure:
 
     ax.set_title(f"Distribución de '{column}'", fontsize=14)
     ax.set_xlabel(column)
-    ax.set_ylabel("Frecuencia")
+    ax.set_ylabel("Densidad")
+    ax.set_ylim(bottom=0)  # Evitar que el eje Y empiece por encima de 0
     ax.legend()
 
     plt.tight_layout()
@@ -234,18 +235,18 @@ def plot_model_results(y_test: pd.Series, y_pred: pd.Series) -> plt.Figure:
     -------
     matplotlib.figure.Figure
     """
-    # Convertir a Series por si se reciben arrays de numpy
-    y_test = pd.Series(y_test).reset_index(drop=True)
-    y_pred = pd.Series(y_pred).reset_index(drop=True)
+    # Convertir a arrays numpy para evitar problemas de alineación de índices en pandas
+    y_test_arr = np.asarray(y_test).flatten()
+    y_pred_arr = np.asarray(y_pred).flatten()
 
     fig, ax = plt.subplots(figsize=(7, 6))
 
-    # Scatter: valores reales vs predichos
-    ax.scatter(y_test, y_pred, alpha=0.6, color="steelblue", edgecolor="white", linewidth=0.5)
+    # Scatter: valores reales vs predichos — usar arrays para asegurar que se grafican todos los puntos
+    ax.scatter(y_test_arr, y_pred_arr, alpha=0.6, color="steelblue", edgecolor="white", linewidth=0.5)
 
     # Línea de referencia perfecta (y = x)
-    minimo = min(y_test.min(), y_pred.min())
-    maximo = max(y_test.max(), y_pred.max())
+    minimo = min(y_test_arr.min(), y_pred_arr.min())
+    maximo = max(y_test_arr.max(), y_pred_arr.max())
     ax.plot([minimo, maximo], [minimo, maximo], color="red", linestyle="--", linewidth=1.5, label="Predicción perfecta")
 
     ax.set_title("Valores Reales vs. Predichos", fontsize=14)

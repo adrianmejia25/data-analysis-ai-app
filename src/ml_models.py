@@ -239,8 +239,15 @@ def train_kmeans(
     if df_cluster.empty:
         raise ValueError("No hay columnas numéricas disponibles para clustering.")
 
-    # Eliminar filas con nulos antes de entrenar
-    df_cluster = df_cluster.dropna()
+    # Excluir columnas con 50% o más de nulos (evita descartar demasiadas filas)
+    umbral_nulos = 0.5 * len(df_cluster)
+    df_cluster = df_cluster.loc[:, df_cluster.isnull().sum() < umbral_nulos]
+
+    if df_cluster.empty:
+        raise ValueError("Todas las columnas tienen más del 50% de nulos.")
+
+    # Rellenar nulos restantes con la media de cada columna
+    df_cluster = df_cluster.fillna(df_cluster.mean(numeric_only=True))
 
     if len(df_cluster) < n_clusters:
         raise ValueError(
@@ -286,11 +293,16 @@ def get_cluster_labels(
     else:
         df_cluster = df.select_dtypes(include=np.number)
 
-    # Predecir la etiqueta de cluster para cada fila (NaN donde había nulos)
+    # Usar solo columnas con menos del 50% de nulos (igual que en train_kmeans)
+    umbral_nulos = 0.5 * len(df_cluster)
+    df_cluster = df_cluster.loc[:, df_cluster.isnull().sum() < umbral_nulos]
+
+    # Rellenar nulos restantes con la media para poder predecir en todas las filas
+    df_cluster = df_cluster.fillna(df_cluster.mean(numeric_only=True))
+
+    # Predecir etiqueta de cluster para todas las filas
     etiquetas = np.full(len(df), np.nan)
-    filas_validas = df_cluster.dropna().index
-    etiquetas_validas = kmeans_model.predict(df_cluster.loc[filas_validas])
-    etiquetas[filas_validas] = etiquetas_validas
+    etiquetas[:] = kmeans_model.predict(df_cluster)
 
     df["cluster"] = etiquetas
     return df
