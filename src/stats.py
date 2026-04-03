@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from sklearn.ensemble import IsolationForest
 
 
 def _obtener_columnas_numericas(df: pd.DataFrame) -> list:
@@ -217,8 +218,18 @@ def outlier_detection(data: dict, column: str, method: str = "iqr") -> pd.Series
     elif method == "zscore":
         z = (serie - serie.mean()) / serie.std()
         return z.abs() > 3
+    elif method == "isolation_forest":
+        # Isolation Forest: entrena un modelo no supervisado sobre la columna
+        # y clasifica cada punto como outlier (-1) o inlier (1)
+        valores = serie.dropna().values.reshape(-1, 1)
+        modelo = IsolationForest(contamination="auto", random_state=42)
+        predicciones = modelo.fit_predict(valores)
+        # Reconstruir una Serie booleana alineada con el índice original
+        mascara = pd.Series(False, index=serie.index)
+        mascara[serie.dropna().index] = predicciones == -1
+        return mascara
     else:
-        raise ValueError(f"Método desconocido: '{method}'. Use 'iqr' o 'zscore'.")
+        raise ValueError(f"Método desconocido: '{method}'. Use 'iqr', 'zscore' o 'isolation_forest'.")
 
 
 def ejecutar_estadisticas(data: dict) -> dict:
