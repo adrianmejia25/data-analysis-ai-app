@@ -135,61 +135,56 @@ def model_insight_summary(metrics: dict, model_type: str) -> str:
     str
         Human-readable paragraph summarising model performance.
     """
-    # Modelos de regresión: métricas numéricas continuas
-    if model_type in ("linear_regression", "random_forest"):
-        r2 = metrics.get("r2", None)
-        rmse = metrics.get("rmse", None)
-        mae = metrics.get("mae", None)
+    nombre = model_type.replace("_", " ").title()
 
-        # Construir resumen base
-        lineas = [f"Modelo: {model_type.replace('_', ' ').title()}"]
+    # Rama de regresión: detectada por presencia de la clave 'r2' en las métricas
+    if "r2" in metrics:
+        r2 = metrics.get("r2")
+        rmse = metrics.get("rmse")
+        mae = metrics.get("mae")
 
-        if r2 is not None:
-            # Interpretar R² cualitativamente
-            if r2 >= 0.9:
-                calidad = "excelente"
-            elif r2 >= 0.75:
-                calidad = "bueno"
-            elif r2 >= 0.5:
-                calidad = "moderado"
-            else:
-                calidad = "bajo"
-            lineas.append(f"R² = {r2:.4f} — ajuste {calidad}.")
+        lineas = [f"Modelo: {nombre}"]
+
+        if r2 > 0.85:
+            calidad = "excelente"
+        elif r2 > 0.70:
+            calidad = "bueno"
+        elif r2 > 0.50:
+            calidad = "aceptable"
+        else:
+            calidad = "débil"
+        lineas.append(f"R² = {r2:.4f} — ajuste {calidad}.")
 
         if rmse is not None:
             lineas.append(f"RMSE = {rmse:.4f} (error cuadrático medio).")
-
         if mae is not None:
             lineas.append(f"MAE  = {mae:.4f} (error absoluto medio).")
-
-        if r2 is not None and r2 < 0.5:
+        if r2 < 0.5:
             lineas.append("El modelo explica menos del 50% de la varianza. Considerar más variables o un modelo más complejo.")
 
         return "\n".join(lineas)
 
-    # Modelo de clasificación: métricas de accuracy y reporte
-    elif model_type == "logistic_regression":
-        accuracy = metrics.get("accuracy", None)
-        lineas = [f"Modelo: Regresión Logística"]
+    # Rama de clasificación: detectada por presencia de la clave 'accuracy' en las métricas
+    if "accuracy" in metrics:
+        accuracy = metrics.get("accuracy")
+        lineas = [f"Modelo: {nombre}"]
 
-        if accuracy is not None:
-            pct = round(accuracy * 100, 2)
-            if accuracy >= 0.9:
-                calidad = "muy alta"
-            elif accuracy >= 0.75:
-                calidad = "buena"
-            elif accuracy >= 0.6:
-                calidad = "moderada"
-            else:
-                calidad = "baja"
-            lineas.append(f"Exactitud (accuracy) = {pct}% — precisión {calidad}.")
+        pct = round(accuracy * 100, 2)
+        if accuracy >= 0.9:
+            calidad = "muy alta"
+        elif accuracy >= 0.75:
+            calidad = "buena"
+        elif accuracy >= 0.6:
+            calidad = "moderada"
+        else:
+            calidad = "baja"
+        lineas.append(f"Exactitud (accuracy) = {pct}% — precision {calidad}.")
 
-        # Incluir métricas adicionales si están disponibles
         for metrica in ("precision", "recall", "f1"):
             if metrica in metrics:
                 lineas.append(f"{metrica.capitalize()} = {metrics[metrica]:.4f}.")
 
-        if accuracy is not None and accuracy < 0.6:
+        if accuracy < 0.6:
             lineas.append("La exactitud es baja. Revisar el balance de clases o probar otro clasificador.")
 
         return "\n".join(lineas)

@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, is_classifier
 from sklearn.cluster import KMeans
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -22,6 +22,7 @@ from sklearn.metrics import (
     r2_score,
     recall_score,
 )
+from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 
 
@@ -56,25 +57,59 @@ def split_data(
     if target_column not in df.columns:
         raise ValueError(f"La columna objetivo '{target_column}' no existe en el DataFrame.")
 
-    # Usar solo columnas numéricas como features, excluyendo la columna objetivo
+    total_filas = len(df)
+
+    # --- Features numéricas (excluir columna objetivo y columnas con >40% nulos) ---
     columnas_numericas = df.select_dtypes(include=np.number).columns.tolist()
-    features = [col for col in columnas_numericas if col != target_column]
+    features_num = [
+        col for col in columnas_numericas
+        if col != target_column and df[col].isnull().sum() / total_filas <= 0.40
+    ]
+
+    # --- Features categóricas con baja cardinalidad (≤10 valores únicos) ---
+    # Se codifican con label encoding para capturar variables como 'sex', 'embarked', etc.
+    columnas_cat = df.select_dtypes(exclude=np.number).columns.tolist()
+    features_cat = [
+        col for col in columnas_cat
+        if col != target_column
+        and df[col].nunique(dropna=True) <= 10
+        and df[col].isnull().sum() / total_filas <= 0.40
+    ]
+
+    features = features_num + features_cat
 
     if not features:
-        raise ValueError("No hay columnas numéricas disponibles para usar como features.")
+        raise ValueError("No hay features disponibles tras filtrar columnas con >40% nulos.")
+
+    # Eliminar solo filas donde el target es nulo (las features se imputarán después)
+    df_work = df[features + [target_column]].dropna(subset=[target_column]).copy()
 
     # Validar que hay suficientes filas para dividir
-    if len(df) < 4:
-        raise ValueError(f"El dataset tiene solo {len(df)} filas — se necesitan al menos 4 para dividir.")
+    if len(df_work) < 4:
+        raise ValueError(f"El dataset tiene solo {len(df_work)} filas válidas — se necesitan al menos 4.")
 
-    # Eliminar filas con nulos en las columnas relevantes
-    columnas_relevantes = features + [target_column]
-    df_limpio = df[columnas_relevantes].dropna()
+    # Codificar columnas categóricas como códigos enteros (label encoding)
+    for col in features_cat:
+        df_work[col] = df_work[col].astype("category").cat.codes.replace(-1, np.nan)
 
-    X = df_limpio[features]
-    y = df_limpio[target_column]
+    X = df_work[features]
+    y = df_work[target_column]
 
-    return train_test_split(X, y, test_size=test_size, random_state=random_state)
+    # Dividir ANTES de imputar para evitar data leakage del conjunto de prueba al de entrenamiento
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state
+    )
+
+    # Imputar nulos restantes con la mediana de X_train — aplicar a ambos conjuntos
+    imputer = SimpleImputer(strategy="median")
+    X_train = pd.DataFrame(
+        imputer.fit_transform(X_train), columns=features, index=X_train.index
+    )
+    X_test = pd.DataFrame(
+        imputer.transform(X_test), columns=features, index=X_test.index
+    )
+
+    return X_train, X_test, y_train, y_test
 
 
 def train_model(
@@ -104,8 +139,17 @@ def train_model(
         modelo = LinearRegression()
 
     elif model_type == "random_forest":
-        # n_estimators=100 es un buen balance entre rendimiento y velocidad
-        modelo = RandomForestRegressor(n_estimators=100, random_state=42)
+        # Auto-detectar si el target es clasificación o regresión:
+        # si tiene 20 o menos valores únicos enteros se trata como clasificación
+        valores_unicos = y_train.dropna().unique()
+        es_clasificacion = (
+            len(valores_unicos) <= 20
+            and all(float(v) == int(float(v)) for v in valores_unicos)
+        )
+        if es_clasificacion:
+            modelo = RandomForestClassifier(n_estimators=100, random_state=42)
+        else:
+            modelo = RandomForestRegressor(n_estimators=100, random_state=42)
 
     elif model_type == "logistic_regression":
         # max_iter=1000 para asegurar convergencia en datasets variados
@@ -153,12 +197,21 @@ def evaluate_model(
     # Detectar automáticamente si el modelo es clasificador o regresor
     if is_classifier(model):
         # --- Métricas de clasificación ---
+        # Probabilidades de la clase positiva para el scatter plot (si el modelo las soporta)
+        proba = None
+        if hasattr(model, "predict_proba"):
+            proba_matrix = model.predict_proba(X_test)
+            # Para clasificación binaria tomar columna de la clase positiva; para multiclase, None
+            if proba_matrix.shape[1] == 2:
+                proba = proba_matrix[:, 1].tolist()
+
         # average='weighted' maneja correctamente clases desbalanceadas
         return {
             "accuracy": round(accuracy_score(y_test, y_pred), 4),
             "precision": round(precision_score(y_test, y_pred, average="weighted", zero_division=0), 4),
             "recall": round(recall_score(y_test, y_pred, average="weighted", zero_division=0), 4),
             "f1": round(f1_score(y_test, y_pred, average="weighted", zero_division=0), 4),
+            "proba": proba,
             "report": classification_report(y_test, y_pred, zero_division=0),
             "confusion_matrix": confusion_matrix(y_test, y_pred),
         }

@@ -291,6 +291,8 @@ def seccion_ml(data: dict) -> None:
             st.session_state["metricas"] = metricas_test
             st.session_state["metricas_train"] = metricas_train
             st.session_state["y_test"] = y_test.reset_index(drop=True)
+            # Para regresión guardamos valores predichos; para clasificación se usan
+            # las probabilidades almacenadas dentro de metricas_test["proba"]
             st.session_state["y_pred"] = pd.Series(
                 modelo.predict(X_test), name="y_pred"
             ).reset_index(drop=True)
@@ -305,23 +307,39 @@ def seccion_ml(data: dict) -> None:
         metricas_train = st.session_state.get("metricas_train", {})
         y_test_stored = st.session_state["y_test"]
         y_pred_stored = st.session_state["y_pred"]
+        es_clasificacion = "accuracy" in metricas
 
-        # Métricas de prueba (conjunto que el modelo nunca vio)
+        # Métricas de prueba — mostrar según tipo de tarea
         st.subheader("Métricas — Conjunto de Prueba (test set)")
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("R² (test)", metricas.get("r2", "—"))
-        col2.metric("RMSE (test)", metricas.get("rmse", "—"))
-        col3.metric("MAE (test)", metricas.get("mae", "—"))
-        col4.metric("MSE (test)", metricas.get("mse", "—"))
+        if es_clasificacion:
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Accuracy (test)", metricas.get("accuracy", "—"))
+            col2.metric("Precision (test)", metricas.get("precision", "—"))
+            col3.metric("Recall (test)", metricas.get("recall", "—"))
+            col4.metric("F1 (test)", metricas.get("f1", "—"))
 
-        # Mostrar R² de entrenamiento junto al de prueba para detectar overfitting
-        r2_train = metricas_train.get("r2", None)
-        r2_test = metricas.get("r2", None)
-        if r2_train is not None and r2_test is not None:
-            diff = round(r2_train - r2_test, 4)
-            st.caption(f"R² entrenamiento: {r2_train} | R² prueba: {r2_test} | Diferencia: {diff}")
-            if diff > 0.1:
-                st.warning("El modelo muestra posible overfitting (R² entrenamiento muy superior al de prueba).")
+            # Comparar accuracy train vs test para detectar overfitting
+            acc_train = metricas_train.get("accuracy", None)
+            acc_test = metricas.get("accuracy", None)
+            if acc_train is not None and acc_test is not None:
+                diff = round(acc_train - acc_test, 4)
+                st.caption(f"Accuracy entrenamiento: {acc_train} | Accuracy prueba: {acc_test} | Diferencia: {diff}")
+                if diff > 0.15:
+                    st.warning("El modelo muestra posible overfitting (accuracy entrenamiento muy superior al de prueba).")
+        else:
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("R² (test)", metricas.get("r2", "—"))
+            col2.metric("RMSE (test)", metricas.get("rmse", "—"))
+            col3.metric("MAE (test)", metricas.get("mae", "—"))
+            col4.metric("MSE (test)", metricas.get("mse", "—"))
+
+            r2_train = metricas_train.get("r2", None)
+            r2_test = metricas.get("r2", None)
+            if r2_train is not None and r2_test is not None:
+                diff = round(r2_train - r2_test, 4)
+                st.caption(f"R² entrenamiento: {r2_train} | R² prueba: {r2_test} | Diferencia: {diff}")
+                if diff > 0.15:
+                    st.warning("El modelo muestra posible overfitting (R² entrenamiento muy superior al de prueba).")
 
         # Resumen de texto desde insights
         try:
@@ -330,10 +348,17 @@ def seccion_ml(data: dict) -> None:
         except Exception as e:
             st.error(f"Error al generar resumen del modelo: {e}")
 
-        # Gráfico real vs predicho — usar arrays ya almacenados con índices alineados
+        # Gráfico: para clasificación binaria usar probabilidades vs valor real
         st.subheader("Valores Reales vs. Predichos (test set)")
         try:
-            fig_pred = plot_model_results(y_test_stored, y_pred_stored)
+            proba = metricas.get("proba")
+            if es_clasificacion and proba is not None:
+                # Scatter: valor real (0/1) vs probabilidad de la clase positiva
+                y_scatter = pd.Series(proba, name="probabilidad_clase_positiva")
+                fig_pred = plot_model_results(y_test_stored, y_scatter)
+                st.caption("Eje X: valor real | Eje Y: probabilidad predicha de la clase positiva")
+            else:
+                fig_pred = plot_model_results(y_test_stored, y_pred_stored)
             st.pyplot(fig_pred)
         except Exception as e:
             st.error(f"Error al graficar predicciones: {e}")
