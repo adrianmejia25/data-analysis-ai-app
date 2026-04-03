@@ -9,7 +9,7 @@ Run with:
 import streamlit as st
 
 from src.data_loader import load_csv, load_excel
-from src.statistics import descriptive_stats, correlation_matrix, null_report
+from src.stats import descriptive_stats, correlation_matrix, null_report
 from src.ml_models import split_data, train_model, evaluate_model
 from src.visualization import (
     plot_distribution,
