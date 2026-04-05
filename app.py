@@ -38,6 +38,7 @@ from src.stats import (
     outlier_detection,
 )
 from src.visualization import (
+    plot_boxplot,
     plot_correlation_heatmap,
     plot_distribution,
     plot_model_results,
@@ -245,6 +246,18 @@ def seccion_estadisticas(data: dict) -> None:
     except Exception as e:
         st.error(f"Error al generar resumen de distribución: {e}")
 
+    # --- Distribución por Boxplot ---
+    st.subheader("Distribución por Boxplot")
+    st.caption(
+        "Los boxplots muestran la mediana (línea central), el rango intercuartílico (caja) "
+        "y los valores atípicos (puntos fuera de los bigotes) de cada columna numérica."
+    )
+    try:
+        fig_box = plot_boxplot(data)
+        st.pyplot(fig_box)
+    except Exception as e:
+        st.error(f"Error al graficar boxplot: {e}")
+
     # --- Relaciones entre Variables ---
     st.subheader("Relaciones entre Variables")
     if len(columnas_numericas) < 2:
@@ -385,6 +398,37 @@ def seccion_ml(data: dict) -> None:
             st.info(resumir_modelo(metricas, "random_forest", st.session_state.get("target_col", target_col)))
         except Exception as e:
             st.error(f"Error al generar resumen natural del modelo: {e}")
+
+        # Matriz de confusión y reporte de clasificación (solo para clasificación)
+        if es_clasificacion:
+            cm = metricas.get("confusion_matrix")
+            report = metricas.get("report")
+
+            if cm is not None:
+                st.subheader("Matriz de Confusión")
+                try:
+                    import matplotlib.pyplot as plt
+                    import seaborn as sns
+                    fig_cm, ax_cm = plt.subplots(figsize=(5, 4))
+                    sns.heatmap(
+                        cm,
+                        annot=True,
+                        fmt="d",
+                        cmap="Blues",
+                        linewidths=0.5,
+                        ax=ax_cm,
+                    )
+                    ax_cm.set_xlabel("Predicho")
+                    ax_cm.set_ylabel("Real")
+                    ax_cm.set_title("Matriz de Confusión")
+                    plt.tight_layout()
+                    st.pyplot(fig_cm)
+                except Exception as e:
+                    st.error(f"Error al graficar la matriz de confusión: {e}")
+
+            if report:
+                st.subheader("Reporte de Clasificación")
+                st.text(report)
 
         # Gráfico: para clasificación binaria usar probabilidades vs valor real
         st.subheader("Valores Reales vs. Predichos (test set)")

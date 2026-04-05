@@ -309,9 +309,17 @@ def train_kmeans(
             "Se necesitan al menos tantas filas como clusters."
         )
 
-    # Entrenar el modelo KMeans
+    # Normalizar antes de KMeans para que columnas con escalas grandes (ej. fare, body)
+    # no dominen la distancia euclidiana y distorsionen los clusters
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(df_cluster)
+
+    # Entrenar el modelo KMeans sobre los datos normalizados
     kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init="auto")
-    etiquetas = kmeans.fit_predict(df_cluster)
+    etiquetas = kmeans.fit_predict(X_scaled)
+
+    # Guardar el scaler como atributo del modelo para usarlo en get_cluster_labels
+    kmeans.scaler_ = scaler
 
     return kmeans, etiquetas
 
@@ -414,9 +422,15 @@ def get_cluster_labels(
     # Rellenar nulos restantes con la media para poder predecir en todas las filas
     df_cluster = df_cluster.fillna(df_cluster.mean(numeric_only=True))
 
+    # Aplicar el mismo StandardScaler usado durante el entrenamiento si está disponible
+    if hasattr(kmeans_model, "scaler_"):
+        X_predict = kmeans_model.scaler_.transform(df_cluster)
+    else:
+        X_predict = df_cluster.values
+
     # Predecir etiqueta de cluster para todas las filas
     etiquetas = np.full(len(df), np.nan)
-    etiquetas[:] = kmeans_model.predict(df_cluster)
+    etiquetas[:] = kmeans_model.predict(X_predict)
 
     df["cluster"] = etiquetas
     return df

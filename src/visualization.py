@@ -220,6 +220,68 @@ def plot_bar(data: dict, x_col: str, y_col: str) -> plt.Figure:
     return fig
 
 
+def plot_boxplot(data: dict, columns: list[str] | None = None) -> plt.Figure:
+    """
+    Genera un gráfico de caja (boxplot) para columnas numéricas.
+
+    Parameters
+    ----------
+    data : dict
+        Diccionario del contrato de datos con clave 'df' (DataFrame).
+    columns : list[str] or None
+        Subconjunto de columnas a graficar. None usa todas las columnas numéricas.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    df = data["df"]
+
+    # Seleccionar columnas numéricas
+    df_numerico = df.select_dtypes(include=np.number)
+
+    if columns is not None:
+        # Filtrar solo las columnas solicitadas que existan y sean numéricas
+        columnas_validas = [c for c in columns if c in df_numerico.columns]
+    else:
+        columnas_validas = df_numerico.columns.tolist()
+
+    if not columnas_validas:
+        raise ValueError("No hay columnas numéricas disponibles para el boxplot.")
+
+    # Calcular el número de filas y columnas de la cuadrícula de subplots
+    n = len(columnas_validas)
+    n_cols = min(n, 3)
+    n_rows = (n + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+
+    # Asegurar que axes sea siempre una lista plana para iterar con facilidad
+    if n == 1:
+        axes = [axes]
+    else:
+        axes = np.array(axes).flatten()
+
+    for i, col in enumerate(columnas_validas):
+        ax = axes[i]
+        serie = df_numerico[col].dropna()
+
+        # Boxplot individual por columna usando seaborn
+        sns.boxplot(y=serie, ax=ax, color="steelblue", width=0.4, linewidth=1.2)
+
+        ax.set_title(col, fontsize=12)
+        ax.set_ylabel(col)
+        ax.set_xlabel("")
+
+    # Ocultar ejes sobrantes si el número de columnas no llena la cuadrícula
+    for j in range(len(columnas_validas), len(axes)):
+        axes[j].set_visible(False)
+
+    fig.suptitle("Distribución por Columna (Boxplot)", fontsize=14, y=1.01)
+    plt.tight_layout()
+    return fig
+
+
 def plot_model_results(y_test: pd.Series, y_pred: pd.Series) -> plt.Figure:
     """
     Plot actual vs. predicted values for a regression model.
