@@ -41,6 +41,7 @@ from src.visualization import (
     plot_boxplot,
     plot_correlation_heatmap,
     plot_distribution,
+    plot_feature_importance,
     plot_model_results,
     plot_scatter,
 )
@@ -86,9 +87,19 @@ def cargar_desde_upload(archivo) -> dict:
         try:
             df = pd.read_csv(archivo)
         except Exception:
-            # Algunos CSV usan punto y coma como separador
             archivo.seek(0)
             df = pd.read_csv(archivo, sep=";")
+        # pandas no lanza excepción con separador incorrecto — solo produce 1 columna
+        if df.shape[1] == 1:
+            archivo.seek(0)
+            df_retry = pd.read_csv(archivo, sep=";")
+            if df_retry.shape[1] > 1:
+                df = df_retry
+            else:
+                archivo.seek(0)
+                df_retry = pd.read_csv(archivo, sep="\t")
+                if df_retry.shape[1] > 1:
+                    df = df_retry
     elif nombre.endswith((".xlsx", ".xls")):
         df = pd.read_excel(archivo)
     else:
@@ -344,6 +355,8 @@ def seccion_ml(data: dict) -> None:
                 modelo.predict(X_test), name="y_pred"
             ).reset_index(drop=True)
             st.session_state["target_col"] = target_col
+            # Guardar los nombres de features para el gráfico de importancia de variables
+            st.session_state["feature_names"] = X_train.columns.tolist()
 
         except Exception as e:
             st.error(f"Error al entrenar el modelo: {e}")
@@ -429,6 +442,20 @@ def seccion_ml(data: dict) -> None:
             if report:
                 st.subheader("Reporte de Clasificación")
                 st.text(report)
+
+        # Importancia de variables (disponible para cualquier tipo de RandomForest)
+        st.subheader("Importancia de Variables")
+        st.caption("Las barras muestran qué tan relevante fue cada variable para las predicciones del modelo.")
+        try:
+            modelo_guardado = st.session_state.get("modelo")
+            feature_names = st.session_state.get("feature_names", [])
+            if modelo_guardado is not None and feature_names:
+                fig_imp = plot_feature_importance(modelo_guardado, feature_names)
+                st.pyplot(fig_imp)
+            else:
+                st.info("Entrena el modelo para ver la importancia de variables.")
+        except Exception as e:
+            st.error(f"Error al graficar importancia de variables: {e}")
 
         # Gráfico: para clasificación binaria usar probabilidades vs valor real
         st.subheader("Valores Reales vs. Predichos (test set)")
