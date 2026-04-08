@@ -282,6 +282,76 @@ def plot_boxplot(data: dict, columns: list[str] | None = None) -> plt.Figure:
     return fig
 
 
+def plot_feature_importance(model, feature_names: list[str]) -> plt.Figure:
+    """
+    Genera un gráfico de barras horizontales con la importancia de cada variable
+    en un modelo RandomForest entrenado.
+
+    Parameters
+    ----------
+    model : sklearn.base.BaseEstimator
+        Modelo Random Forest entrenado (Classifier o Regressor).
+    feature_names : list[str]
+        Nombres de las features en el mismo orden que se usaron al entrenar.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    # Validar que el modelo tenga importancias de variables (propiedad de RandomForest)
+    if not hasattr(model, "feature_importances_"):
+        raise ValueError("El modelo no tiene el atributo 'feature_importances_'. "
+                         "Solo modelos RandomForest son compatibles.")
+
+    importancias = model.feature_importances_
+
+    # Construir DataFrame y ordenar de mayor a menor importancia
+    df_imp = pd.DataFrame({
+        "feature": feature_names,
+        "importance": importancias,
+    }).sort_values("importance", ascending=False)
+
+    # Limitar a las 15 variables más importantes para no saturar el gráfico
+    df_imp = df_imp.head(15).reset_index(drop=True)
+
+    # Ordenar ascendente para que la barra más importante quede arriba en el gráfico horizontal
+    df_imp = df_imp.sort_values("importance", ascending=True).reset_index(drop=True)
+
+    n = len(df_imp)
+    fig, ax = plt.subplots(figsize=(9, max(4, n * 0.5)))
+
+    # Paleta de colores degradada según importancia (Blues: más oscuro = más importante)
+    colores = plt.cm.Blues(
+        np.linspace(0.3, 0.9, n)
+    )
+
+    # Dibujar las barras horizontales
+    barras = ax.barh(df_imp["feature"], df_imp["importance"], color=colores, edgecolor="white")
+
+    # Añadir etiqueta numérica al final de cada barra
+    for barra, valor in zip(barras, df_imp["importance"]):
+        ax.text(
+            barra.get_width() + 0.002,
+            barra.get_y() + barra.get_height() / 2,
+            f"{valor:.3f}",
+            va="center",
+            ha="left",
+            fontsize=9,
+        )
+
+    ax.set_title("Importancia de Variables — Random Forest", fontsize=14)
+    ax.set_xlabel("Importancia")
+    ax.set_ylabel("")
+    ax.set_xlim(0, df_imp["importance"].max() * 1.18)
+
+    # Remover bordes superiores y derechos para un estilo más limpio
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    return fig
+
+
 def plot_model_results(y_test: pd.Series, y_pred: pd.Series) -> plt.Figure:
     """
     Plot actual vs. predicted values for a regression model.
