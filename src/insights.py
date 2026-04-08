@@ -6,6 +6,8 @@ Consumes the standard data contract dict from data_loader and results
 from statistics / ml_models to produce human-readable summaries.
 """
 
+import re
+
 import numpy as np
 import pandas as pd
 
@@ -107,11 +109,18 @@ def data_quality_report(data: dict) -> dict:
     # Detectar columnas con un único valor (sin variabilidad)
     columnas_constantes = [col for col in df.columns if df[col].nunique(dropna=True) <= 1]
 
+    # Porcentaje de nulos por columna (sólo columnas con al menos un nulo)
+    null_pct_per_column = {
+        col: round(nulos_por_columna[col] / total_filas * 100)
+        for col in columnas_con_nulos
+    } if total_filas > 0 else {}
+
     return {
         "total_rows": total_filas,
         "total_columns": total_columnas,
         "columns_with_nulls": columnas_con_nulos,
         "null_pct_overall": null_pct_global,
+        "null_pct_per_column": null_pct_per_column,
         "numeric_columns": columnas_numericas,
         "categorical_columns": columnas_categoricas,
         "duplicate_rows": filas_duplicadas,
@@ -287,3 +296,354 @@ def detect_data_anomalies(data: dict, numeric_columns: list[str] | None = None) 
         return pd.DataFrame(columns=["column", "anomaly_type", "detail"])
 
     return pd.DataFrame(anomalias).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Funciones de resumen en lenguaje natural (español)
+# ---------------------------------------------------------------------------
+
+def resumir_calidad(reporte: dict) -> str:
+    """
+    Genera un párrafo en español resumiendo la calidad del dataset.
+
+    Parameters
+    ----------
+    reporte : dict
+        Salida de data_quality_report().
+
+    Returns
+    -------
+    str
+        Párrafo con frases legibles para usuarios no técnicos.
+    """
+    lineas = []
+
+    total_rows = reporte.get("total_rows", 0)
+    total_columns = reporte.get("total_columns", 0)
+    lineas.append(f"El dataset tiene {total_rows} registros y {total_columns} columnas.")
+
+    duplicate_rows = reporte.get("duplicate_rows", 0)
+    if total_rows > 0 and duplicate_rows > 0:
+        pct = round(duplicate_rows / total_rows * 100)
+        lineas.append(f"Se encontraron {duplicate_rows} filas duplicadas ({pct}% del total).")
+    else:
+        lineas.append("No se encontraron filas duplicadas.")
+
+    null_pct_per_column = reporte.get("null_pct_per_column", {})
+    cols_con_nulos = {col: pct for col, pct in null_pct_per_column.items() if pct > 0}
+    if cols_con_nulos:
+        top_cols = sorted(cols_con_nulos.items(), key=lambda x: x[1], reverse=True)[:3]
+        partes = [f"{col} ({pct}%)" for col, pct in top_cols]
+        lineas.append(f"Las columnas con más valores faltantes son: {', '.join(partes)}.")
+
+    null_pct_overall = reporte.get("null_pct_overall", 0)
+    if null_pct_overall < 10:
+        lineas.append("El dataset está en buenas condiciones para el análisis.")
+
+    return "\n".join(lineas)
+
+
+def resumir_anomalias(anomalias_df: pd.DataFrame) -> str:
+    """
+    Genera frases en español describiendo cada anomalía detectada.
+
+    Parameters
+    ----------
+    anomalias_df : pd.DataFrame
+        Salida de detect_data_anomalies(). Columnas: column, anomaly_type, detail.
+
+    Returns
+    -------
+    str
+        Párrafo con una oración por anomalía, o mensaje de ausencia.
+    """
+    if anomalias_df.empty:
+        return "No se detectaron anomalías en las columnas numéricas."
+
+    lineas = []
+    for _, fila in anomalias_df.iterrows():
+        col = fila["column"]
+        tipo = fila["anomaly_type"]
+        detalle = fila["detail"]
+
+        if tipo == "outliers_iqr":
+            m = re.search(r'\((\d+\.?\d*)%\)', detalle)
+            if m:
+                pct = round(float(m.group(1)))
+                lineas.append(f"El {pct}% de los registros tienen valores atípicos en {col}.")
+            else:
+                lineas.append(f"Se detectaron valores atípicos en la columna {col}.")
+
+        elif tipo == "alta_asimetria":
+            m = re.search(r'Asimetría (\w+): (-?\d+\.?\d*)', detalle)
+            if m:
+                direccion = m.group(1)
+                valor = float(m.group(2))
+                lineas.append(
+                    f"La columna {col} presenta alta asimetría {direccion} ({valor:.2f})."
+                )
+            else:
+                lineas.append(f"La columna {col} presenta alta asimetría en su distribución.")
+
+        elif tipo == "alto_porcentaje_nulos":
+            m = re.search(r'(\d+\.?\d*)%', detalle)
+            if m:
+                pct = round(float(m.group(1)))
+                lineas.append(f"La columna {col} tiene un {pct}% de valores faltantes.")
+            else:
+                lineas.append(f"La columna {col} tiene un alto porcentaje de valores faltantes.")
+
+        elif tipo == "valor_constante":
+            lineas.append(f"La columna {col} tiene un único valor en todos los registros (sin variabilidad).")
+
+    return "\n".join(lineas) if lineas else "No se detectaron anomalías en las columnas numéricas."
+
+
+def resumir_correlaciones(corr_matrix: pd.DataFrame) -> list[str]:
+    """
+    Genera una lista de frases en español, una por cada par correlacionado.
+
+    Etiquetas de intensidad:
+        - |r| > 0.5 → "fuerte"
+        - |r| > 0.3 → "moderada"
+        - |r| ≤ 0.3 → ignorado
+
+    Etiquetas de dirección: "positiva" (r > 0) / "negativa" (r < 0).
+    Excluye autocorrelaciones (r = 1.0) y duplicados recorriendo el triángulo
+    superior de la matriz.
+
+    Parameters
+    ----------
+    corr_matrix : pd.DataFrame
+        Matriz de correlación cuadrada (salida de correlation_matrix()).
+
+    Returns
+    -------
+    list[str]
+        Una cadena por par relevante. Si no se encuentra ninguno, lista con un
+        único mensaje de ausencia.
+    """
+    if corr_matrix.empty or corr_matrix.shape[1] < 2:
+        return ["No se encontraron correlaciones relevantes entre las variables numéricas."]
+
+    mensajes = []
+    cols = corr_matrix.columns.tolist()
+
+    for i, col_a in enumerate(cols):
+        for col_b in cols[i + 1:]:
+            if col_a not in corr_matrix.index or col_b not in corr_matrix.columns:
+                continue
+            r = corr_matrix.loc[col_a, col_b]
+            if pd.isna(r) or abs(r) >= 1.0:
+                continue
+            abs_r = abs(r)
+            if abs_r > 0.5:
+                intensidad = "fuerte"
+            elif abs_r > 0.3:
+                intensidad = "moderada"
+            else:
+                continue
+            direccion = "positiva" if r > 0 else "negativa"
+            mensajes.append(
+                f"Existe una correlación {intensidad} {direccion} (r={r:.2f}) entre {col_a} y {col_b}."
+            )
+
+    if not mensajes:
+        return ["No se encontraron correlaciones relevantes entre las variables numéricas."]
+
+    return mensajes
+
+
+def resumir_outliers(data: dict, column: str, method: str, mascara: pd.Series) -> str:
+    """
+    Genera una frase en español describiendo los outliers detectados en una columna.
+
+    Parameters
+    ----------
+    data : dict
+        Contrato de datos estándar con clave 'df'.
+    column : str
+        Columna analizada.
+    method : str
+        Método utilizado: 'iqr', 'zscore' o 'isolation_forest'.
+    mascara : pd.Series
+        Serie booleana donde True indica un outlier (salida de outlier_detection()).
+
+    Returns
+    -------
+    str
+        Oración descriptiva del resultado.
+    """
+    df = data["df"]
+    total = len(df)
+    n_outliers = int(mascara.sum())
+
+    metodos_display = {
+        "iqr": "IQR",
+        "zscore": "Z-Score",
+        "isolation_forest": "Isolation Forest",
+    }
+    metodo_nombre = metodos_display.get(method, method.upper())
+
+    if n_outliers == 0:
+        return f"No se detectaron valores atípicos en {column} con el método {metodo_nombre}."
+
+    pct = round(n_outliers / total * 100)
+    pct_str = f"{pct}%" if pct > 0 else "<1%"
+    return (
+        f"El {pct_str} de los registros ({n_outliers} de {total}) tienen valores atípicos "
+        f"en {column} según el método {metodo_nombre}."
+    )
+
+
+def resumir_clusters(df_clusters: pd.DataFrame, n_clusters: int) -> str:
+    """
+    Genera un resumen en español de las características de cada cluster.
+
+    Parameters
+    ----------
+    df_clusters : pd.DataFrame
+        DataFrame con todas las columnas originales más la columna 'cluster'.
+    n_clusters : int
+        Número de clusters solicitados.
+
+    Returns
+    -------
+    str
+        Párrafo con una oración por cluster.
+    """
+    if df_clusters.empty:
+        return "No hay datos de clustering disponibles."
+
+    lineas = [f"Se detectaron {n_clusters} agrupaciones principales."]
+
+    cols_num = df_clusters.select_dtypes(include=np.number).columns.tolist()
+    cols_features = [c for c in cols_num if c != "cluster"]
+    cols_mostrar = cols_features[:2]
+
+    clusters_unicos = sorted(df_clusters["cluster"].dropna().unique())
+
+    for cluster_id in clusters_unicos:
+        mascara = df_clusters["cluster"] == cluster_id
+        n_registros = int(mascara.sum())
+
+        if not cols_mostrar:
+            lineas.append(f"El grupo {int(cluster_id)} tiene {n_registros} registros.")
+            continue
+
+        partes = []
+        for col in cols_mostrar:
+            mean_val = df_clusters.loc[mascara, col].mean()
+            partes.append(f"{col} promedio de {mean_val:.1f}")
+
+        if len(partes) == 1:
+            desc = partes[0]
+        else:
+            desc = f"{partes[0]} y {partes[1]}"
+
+        lineas.append(f"El grupo {int(cluster_id)} tiene {desc} ({n_registros} registros).")
+
+    return "\n".join(lineas)
+
+
+def resumir_modelo(metricas: dict, model_type: str, target_col: str) -> str:
+    """
+    Genera un resumen en español del desempeño del modelo entrenado.
+
+    Parameters
+    ----------
+    metricas : dict
+        Salida de evaluate_model(). Claves varían según tipo de modelo.
+    model_type : str
+        Tipo de modelo: 'random_forest', 'linear_regression', etc.
+    target_col : str
+        Nombre de la columna objetivo predicha por el modelo.
+
+    Returns
+    -------
+    str
+        Oración o párrafo legible para usuarios no técnicos.
+    """
+    def _calidad(score: float) -> str:
+        if score > 0.85:
+            return "excelente"
+        elif score > 0.70:
+            return "bueno"
+        elif score > 0.50:
+            return "aceptable"
+        return "débil"
+
+    if "accuracy" in metricas:
+        accuracy = metricas.get("accuracy", 0)
+        pct = round(accuracy * 100)
+        calidad = _calidad(accuracy)
+        return (
+            f"El modelo predice con {pct}% de exactitud el valor de {target_col}. "
+            f"Rendimiento: {calidad}."
+        )
+
+    if "r2" in metricas:
+        r2 = metricas.get("r2", 0)
+        rmse = metricas.get("rmse")
+        pct = round(r2 * 100)
+        calidad = _calidad(r2)
+        partes = [f"R²={r2:.2f}"]
+        if rmse is not None:
+            partes.append(f"RMSE={rmse:.1f}")
+        metricas_str = ", ".join(partes)
+        return (
+            f"El modelo explica el {pct}% de la variación en {target_col} "
+            f"({metricas_str}). Rendimiento: {calidad}."
+        )
+
+    return "No se pudo generar un resumen para el tipo de modelo especificado."
+
+
+def resumir_distribucion(column: str, mean: float, median: float, skewness: float) -> str:
+    """
+    Genera una frase en español interpretando la forma de la distribución de una columna.
+
+    Parameters
+    ----------
+    column : str
+        Nombre de la columna analizada.
+    mean : float
+        Media aritmética de los valores no nulos.
+    median : float
+        Mediana de los valores no nulos.
+    skewness : float
+        Coeficiente de asimetría (skew) de los valores no nulos.
+
+    Returns
+    -------
+    str
+        Oración descriptiva de la distribución.
+    """
+    relative_diff = abs(mean - median) / (abs(mean) + 1e-9)
+
+    if relative_diff < 0.05 and abs(skewness) < 0.5:
+        return (
+            f"La distribución de {column} es aproximadamente simétrica "
+            f"(media={mean:.2f}, mediana={median:.2f})."
+        )
+
+    if mean > median and skewness > 0.5:
+        return (
+            f"La distribución de {column} tiene asimetría positiva — "
+            f"hay valores altos que elevan la media ({mean:.2f}) "
+            f"por encima de la mediana ({median:.2f})."
+        )
+
+    if mean < median and skewness < -0.5:
+        return (
+            f"La distribución de {column} tiene asimetría negativa — "
+            f"hay valores bajos que arrastran la media ({mean:.2f}) "
+            f"por debajo de la mediana ({median:.2f})."
+        )
+
+    # Caso intermedio: diferencia apreciable pero no encaja en los criterios anteriores
+    direccion = "positiva" if skewness > 0 else "negativa"
+    return (
+        f"La distribución de {column} muestra una leve asimetría {direccion} "
+        f"(media={mean:.2f}, mediana={median:.2f}, asimetría={skewness:.2f})."
+    )

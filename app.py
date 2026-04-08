@@ -14,12 +14,20 @@ from src.insights import (
     data_quality_report,
     detect_data_anomalies,
     model_insight_summary,
+    resumir_anomalias,
+    resumir_calidad,
+    resumir_clusters,
+    resumir_correlaciones,
+    resumir_distribucion,
+    resumir_modelo,
+    resumir_outliers,
     top_correlated_features,
 )
 from src.ml_models import (
     evaluate_model,
     get_cluster_labels,
     split_data,
+    train_dbscan,
     train_kmeans,
     train_model,
 )
@@ -30,9 +38,12 @@ from src.stats import (
     outlier_detection,
 )
 from src.visualization import (
+    plot_boxplot,
     plot_correlation_heatmap,
     plot_distribution,
+    plot_feature_importance,
     plot_model_results,
+    plot_scatter,
 )
 
 
@@ -76,9 +87,19 @@ def cargar_desde_upload(archivo) -> dict:
         try:
             df = pd.read_csv(archivo)
         except Exception:
-            # Algunos CSV usan punto y coma como separador
             archivo.seek(0)
             df = pd.read_csv(archivo, sep=";")
+        # pandas no lanza excepción con separador incorrecto — solo produce 1 columna
+        if df.shape[1] == 1:
+            archivo.seek(0)
+            df_retry = pd.read_csv(archivo, sep=";")
+            if df_retry.shape[1] > 1:
+                df = df_retry
+            else:
+                archivo.seek(0)
+                df_retry = pd.read_csv(archivo, sep="\t")
+                if df_retry.shape[1] > 1:
+                    df = df_retry
     elif nombre.endswith((".xlsx", ".xls")):
         df = pd.read_excel(archivo)
     else:
@@ -135,6 +156,11 @@ def seccion_vista_general(data: dict) -> None:
 
         if reporte["constant_columns"]:
             st.warning(f"Columnas sin variabilidad: {', '.join(reporte['constant_columns'])}")
+
+        try:
+            st.info(resumir_calidad(reporte))
+        except Exception as e:
+            st.error(f"Error al generar resumen de calidad: {e}")
     except Exception as e:
         st.error(f"Error al generar reporte de calidad: {e}")
 
@@ -154,6 +180,10 @@ def seccion_vista_general(data: dict) -> None:
             st.success("No se detectaron anomalías en las columnas numéricas.")
         else:
             st.dataframe(anomalias, use_container_width=True)
+        try:
+            st.info(resumir_anomalias(anomalias))
+        except Exception as e:
+            st.error(f"Error al generar resumen de anomalías: {e}")
     except Exception as e:
         st.error(f"Error al detectar anomalías: {e}")
 
@@ -189,6 +219,11 @@ def seccion_estadisticas(data: dict) -> None:
         try:
             corr_df = correlation_matrix(data)
             st.dataframe(corr_df.style.background_gradient(cmap="coolwarm", axis=None), use_container_width=True)
+            try:
+                for frase in resumir_correlaciones(corr_df):
+                    st.info(frase)
+            except Exception as e:
+                st.error(f"Error al generar resumen de correlaciones: {e}")
         except Exception as e:
             st.error(f"Error al calcular matriz de correlación: {e}")
 
@@ -211,27 +246,46 @@ def seccion_estadisticas(data: dict) -> None:
         st.pyplot(fig_dist)
     except Exception as e:
         st.error(f"Error al graficar distribución: {e}")
+    try:
+        serie = df[columna_sel].dropna()
+        st.info(resumir_distribucion(
+            columna_sel,
+            mean=float(serie.mean()),
+            median=float(serie.median()),
+            skewness=float(serie.skew()),
+        ))
+    except Exception as e:
+        st.error(f"Error al generar resumen de distribución: {e}")
 
-    # --- Correlaciones fuertes automáticas (|r| > 0.7) ---
-    if len(columnas_numericas) >= 2:
-        st.subheader("Correlaciones Fuertes Detectadas")
+    # --- Distribución por Boxplot ---
+    st.subheader("Distribución por Boxplot")
+    st.caption(
+        "Los boxplots muestran la mediana (línea central), el rango intercuartílico (caja) "
+        "y los valores atípicos (puntos fuera de los bigotes) de cada columna numérica."
+    )
+    try:
+        fig_box = plot_boxplot(data)
+        st.pyplot(fig_box)
+    except Exception as e:
+        st.error(f"Error al graficar boxplot: {e}")
+
+    # --- Relaciones entre Variables ---
+    st.subheader("Relaciones entre Variables")
+    if len(columnas_numericas) < 2:
+        st.info("Se necesitan al menos 2 columnas numéricas para graficar relaciones.")
+    else:
+        todas_columnas = df.columns.tolist()
+        col1, col2, col3 = st.columns(3)
+        x_col = col1.selectbox("Eje X:", columnas_numericas, key="scatter_x")
+        y_col = col2.selectbox("Eje Y:", columnas_numericas, index=min(1, len(columnas_numericas) - 1), key="scatter_y")
+        hue_opciones = ["Ninguna"] + todas_columnas
+        hue_sel = col3.selectbox("Color (opcional):", hue_opciones, key="scatter_hue")
+        hue_col = None if hue_sel == "Ninguna" else hue_sel
         try:
-            corr = data["df"][columnas_numericas].corr()
-            mensajes = []
-            # Recorrer triángulo superior para evitar duplicados
-            for i, col_a in enumerate(corr.columns):
-                for col_b in corr.columns[i + 1:]:
-                    r = corr.loc[col_a, col_b]
-                    if abs(r) > 0.7:
-                        direccion = "positiva" if r > 0 else "negativa"
-                        mensajes.append(f"Existe una fuerte correlación {direccion} (r={r:.2f}) entre **{col_a}** y **{col_b}**.")
-            if mensajes:
-                for msg in mensajes:
-                    st.info(msg)
-            else:
-                st.write("No se detectaron correlaciones fuertes (|r| > 0.7).")
+            fig_scatter = plot_scatter(data, x_col, y_col, hue_col=hue_col)
+            st.pyplot(fig_scatter)
         except Exception as e:
-            st.error(f"Error al detectar correlaciones fuertes: {e}")
+            st.error(f"Error al graficar dispersión: {e}")
 
     # --- Detección de outliers ---
     st.subheader("Detección de Outliers")
@@ -249,6 +303,10 @@ def seccion_estadisticas(data: dict) -> None:
         else:
             st.warning(f"Se detectaron {n_outliers} outliers ({pct}%) en '{col_outlier}'.")
             st.dataframe(df[mascara], use_container_width=True)
+        try:
+            st.info(resumir_outliers(data, col_outlier, metodo, mascara))
+        except Exception as e:
+            st.error(f"Error al generar resumen de outliers: {e}")
     except Exception as e:
         st.error(f"Error al detectar outliers: {e}")
 
@@ -297,6 +355,8 @@ def seccion_ml(data: dict) -> None:
                 modelo.predict(X_test), name="y_pred"
             ).reset_index(drop=True)
             st.session_state["target_col"] = target_col
+            # Guardar los nombres de features para el gráfico de importancia de variables
+            st.session_state["feature_names"] = X_train.columns.tolist()
 
         except Exception as e:
             st.error(f"Error al entrenar el modelo: {e}")
@@ -347,6 +407,55 @@ def seccion_ml(data: dict) -> None:
             st.info(resumen)
         except Exception as e:
             st.error(f"Error al generar resumen del modelo: {e}")
+        try:
+            st.info(resumir_modelo(metricas, "random_forest", st.session_state.get("target_col", target_col)))
+        except Exception as e:
+            st.error(f"Error al generar resumen natural del modelo: {e}")
+
+        # Matriz de confusión y reporte de clasificación (solo para clasificación)
+        if es_clasificacion:
+            cm = metricas.get("confusion_matrix")
+            report = metricas.get("report")
+
+            if cm is not None:
+                st.subheader("Matriz de Confusión")
+                try:
+                    import matplotlib.pyplot as plt
+                    import seaborn as sns
+                    fig_cm, ax_cm = plt.subplots(figsize=(5, 4))
+                    sns.heatmap(
+                        cm,
+                        annot=True,
+                        fmt="d",
+                        cmap="Blues",
+                        linewidths=0.5,
+                        ax=ax_cm,
+                    )
+                    ax_cm.set_xlabel("Predicho")
+                    ax_cm.set_ylabel("Real")
+                    ax_cm.set_title("Matriz de Confusión")
+                    plt.tight_layout()
+                    st.pyplot(fig_cm)
+                except Exception as e:
+                    st.error(f"Error al graficar la matriz de confusión: {e}")
+
+            if report:
+                st.subheader("Reporte de Clasificación")
+                st.text(report)
+
+        # Importancia de variables (disponible para cualquier tipo de RandomForest)
+        st.subheader("Importancia de Variables")
+        st.caption("Las barras muestran qué tan relevante fue cada variable para las predicciones del modelo.")
+        try:
+            modelo_guardado = st.session_state.get("modelo")
+            feature_names = st.session_state.get("feature_names", [])
+            if modelo_guardado is not None and feature_names:
+                fig_imp = plot_feature_importance(modelo_guardado, feature_names)
+                st.pyplot(fig_imp)
+            else:
+                st.info("Entrena el modelo para ver la importancia de variables.")
+        except Exception as e:
+            st.error(f"Error al graficar importancia de variables: {e}")
 
         # Gráfico: para clasificación binaria usar probabilidades vs valor real
         st.subheader("Valores Reales vs. Predichos (test set)")
@@ -371,32 +480,76 @@ def seccion_ml(data: dict) -> None:
         except Exception as e:
             st.error(f"Error al calcular correlaciones: {e}")
 
-    # --- Clustering K-Means ---
-    st.subheader("Clustering K-Means")
-    n_clusters = st.slider("Número de clusters:", min_value=2, max_value=10, value=3, key="n_clusters")
+    # --- Clustering ---
+    st.subheader("Clustering")
+    metodo_clustering = st.selectbox(
+        "Método de clustering:",
+        ["K-Means", "DBSCAN"],
+        key="clustering_method",
+    )
 
-    if st.button("Ejecutar clustering", key="btn_kmeans"):
-        try:
-            # Entrenar KMeans con las columnas numéricas disponibles
-            kmeans, _ = train_kmeans(data, n_clusters=n_clusters)
+    # Limpiar resultados anteriores si el usuario cambia de método
+    if st.session_state.get("clustering_method_last") != metodo_clustering:
+        st.session_state.pop("df_clusters", None)
+        st.session_state["clustering_method_last"] = metodo_clustering
 
-            # Agregar etiquetas de cluster al DataFrame original
-            df_clusters = get_cluster_labels(data, kmeans)
-            st.session_state["df_clusters"] = df_clusters
+    if metodo_clustering == "K-Means":
+        n_clusters = st.slider("Número de clusters:", min_value=2, max_value=10, value=3, key="n_clusters")
+        if st.button("Ejecutar K-Means", key="btn_kmeans"):
+            try:
+                kmeans, _ = train_kmeans(data, n_clusters=n_clusters)
+                df_clusters = get_cluster_labels(data, kmeans)
+                st.session_state["df_clusters"] = df_clusters
+                st.session_state["n_clusters_detected"] = n_clusters
+            except Exception as e:
+                st.error(f"Error al ejecutar K-Means: {e}")
 
-        except Exception as e:
-            st.error(f"Error al ejecutar clustering: {e}")
+    else:  # DBSCAN
+        col1, col2 = st.columns(2)
+        eps = col1.slider(
+            "eps (radio de vecindad):",
+            min_value=0.1, max_value=3.0, value=1.2, step=0.05,
+            key="dbscan_eps",
+            help="Distancia máxima entre dos puntos para considerarse vecinos. Aplica sobre datos normalizados."
+        )
+        min_samples = col2.slider(
+            "min_samples (mínimo de vecinos):",
+            min_value=2, max_value=20, value=5, step=1,
+            key="dbscan_min_samples",
+            help="Número mínimo de puntos en el vecindario para formar un núcleo."
+        )
+        if st.button("Ejecutar DBSCAN", key="btn_dbscan"):
+            try:
+                _, etiquetas = train_dbscan(data, eps=eps, min_samples=min_samples)
+                df_clusters = data["df"].copy()
+                df_clusters["cluster"] = etiquetas
+                st.session_state["df_clusters"] = df_clusters
+                n_detected = len(set(etiquetas.tolist()) - {-1})
+                st.session_state["n_clusters_detected"] = n_detected
+            except Exception as e:
+                st.error(f"Error al ejecutar DBSCAN: {e}")
 
     # Mostrar resultados de clustering si están disponibles
     if "df_clusters" in st.session_state:
         df_clusters = st.session_state["df_clusters"]
+        n_clusters_resumen = st.session_state.get("n_clusters_detected", 3)
         cols_num = df_clusters.select_dtypes(include=np.number).columns.tolist()
-        # Excluir la columna 'cluster' de las numéricas para análisis
         cols_features = [c for c in cols_num if c != "cluster"]
+
+        # Nota de ruido para DBSCAN
+        if metodo_clustering == "DBSCAN":
+            n_ruido = int((df_clusters["cluster"] == -1).sum())
+            if n_ruido > 0:
+                st.warning(f"DBSCAN detectó {n_ruido} puntos de ruido (cluster = -1) que no pertenecen a ningún grupo.")
+            st.caption(f"Clusters detectados: {n_clusters_resumen} (sin contar ruido)")
 
         conteo = df_clusters["cluster"].value_counts().sort_index()
         st.write("**Distribución de clusters:**")
         st.bar_chart(conteo)
+        try:
+            st.info(resumir_clusters(df_clusters, n_clusters_resumen))
+        except Exception as e:
+            st.error(f"Error al generar resumen de clusters: {e}")
 
         # Gráfico 2D de clusters usando las 2 primeras columnas numéricas
         if len(cols_features) >= 2:
@@ -410,12 +563,14 @@ def seccion_ml(data: dict) -> None:
                 colores = cm.tab10.colors
                 for i, cluster_id in enumerate(clusters_unicos):
                     mascara = df_clusters["cluster"] == cluster_id
+                    label = f"Ruido" if int(cluster_id) == -1 else f"Cluster {int(cluster_id)}"
+                    color = "gray" if int(cluster_id) == -1 else colores[i % len(colores)]
                     ax_cl.scatter(
                         df_clusters.loc[mascara, col_x],
                         df_clusters.loc[mascara, col_y],
-                        label=f"Cluster {int(cluster_id)}",
-                        color=colores[i % len(colores)],
-                        alpha=0.7,
+                        label=label,
+                        color=color,
+                        alpha=0.5 if int(cluster_id) == -1 else 0.7,
                         edgecolor="white",
                         linewidth=0.4,
                     )
@@ -473,7 +628,8 @@ def main() -> None:
                 st.session_state["data"] = data
                 st.session_state["archivo_id"] = archivo_id
                 # Limpiar estado de modelo anterior al cambiar de archivo
-                for clave in ("modelo", "metricas", "y_test", "X_test", "target_col", "df_clusters"):
+                for clave in ("modelo", "metricas", "y_test", "X_test", "target_col",
+                              "df_clusters", "n_clusters_detected", "clustering_method_last"):
                     st.session_state.pop(clave, None)
                 st.success(f"Archivo cargado: **{archivo.name}** — {data['shape'][0]} filas × {data['shape'][1]} columnas")
             except Exception as e:

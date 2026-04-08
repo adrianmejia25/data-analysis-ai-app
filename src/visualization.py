@@ -220,6 +220,138 @@ def plot_bar(data: dict, x_col: str, y_col: str) -> plt.Figure:
     return fig
 
 
+def plot_boxplot(data: dict, columns: list[str] | None = None) -> plt.Figure:
+    """
+    Genera un gráfico de caja (boxplot) para columnas numéricas.
+
+    Parameters
+    ----------
+    data : dict
+        Diccionario del contrato de datos con clave 'df' (DataFrame).
+    columns : list[str] or None
+        Subconjunto de columnas a graficar. None usa todas las columnas numéricas.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    df = data["df"]
+
+    # Seleccionar columnas numéricas
+    df_numerico = df.select_dtypes(include=np.number)
+
+    if columns is not None:
+        # Filtrar solo las columnas solicitadas que existan y sean numéricas
+        columnas_validas = [c for c in columns if c in df_numerico.columns]
+    else:
+        columnas_validas = df_numerico.columns.tolist()
+
+    if not columnas_validas:
+        raise ValueError("No hay columnas numéricas disponibles para el boxplot.")
+
+    # Calcular el número de filas y columnas de la cuadrícula de subplots
+    n = len(columnas_validas)
+    n_cols = min(n, 3)
+    n_rows = (n + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+
+    # Asegurar que axes sea siempre una lista plana para iterar con facilidad
+    if n == 1:
+        axes = [axes]
+    else:
+        axes = np.array(axes).flatten()
+
+    for i, col in enumerate(columnas_validas):
+        ax = axes[i]
+        serie = df_numerico[col].dropna()
+
+        # Boxplot individual por columna usando seaborn
+        sns.boxplot(y=serie, ax=ax, color="steelblue", width=0.4, linewidth=1.2)
+
+        ax.set_title(col, fontsize=12)
+        ax.set_ylabel(col)
+        ax.set_xlabel("")
+
+    # Ocultar ejes sobrantes si el número de columnas no llena la cuadrícula
+    for j in range(len(columnas_validas), len(axes)):
+        axes[j].set_visible(False)
+
+    fig.suptitle("Distribución por Columna (Boxplot)", fontsize=14, y=1.01)
+    plt.tight_layout()
+    return fig
+
+
+def plot_feature_importance(model, feature_names: list[str]) -> plt.Figure:
+    """
+    Genera un gráfico de barras horizontales con la importancia de cada variable
+    en un modelo RandomForest entrenado.
+
+    Parameters
+    ----------
+    model : sklearn.base.BaseEstimator
+        Modelo Random Forest entrenado (Classifier o Regressor).
+    feature_names : list[str]
+        Nombres de las features en el mismo orden que se usaron al entrenar.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    # Validar que el modelo tenga importancias de variables (propiedad de RandomForest)
+    if not hasattr(model, "feature_importances_"):
+        raise ValueError("El modelo no tiene el atributo 'feature_importances_'. "
+                         "Solo modelos RandomForest son compatibles.")
+
+    importancias = model.feature_importances_
+
+    # Construir DataFrame y ordenar de mayor a menor importancia
+    df_imp = pd.DataFrame({
+        "feature": feature_names,
+        "importance": importancias,
+    }).sort_values("importance", ascending=False)
+
+    # Limitar a las 15 variables más importantes para no saturar el gráfico
+    df_imp = df_imp.head(15).reset_index(drop=True)
+
+    # Ordenar ascendente para que la barra más importante quede arriba en el gráfico horizontal
+    df_imp = df_imp.sort_values("importance", ascending=True).reset_index(drop=True)
+
+    n = len(df_imp)
+    fig, ax = plt.subplots(figsize=(9, max(4, n * 0.5)))
+
+    # Paleta de colores degradada según importancia (Blues: más oscuro = más importante)
+    colores = plt.cm.Blues(
+        np.linspace(0.3, 0.9, n)
+    )
+
+    # Dibujar las barras horizontales
+    barras = ax.barh(df_imp["feature"], df_imp["importance"], color=colores, edgecolor="white")
+
+    # Añadir etiqueta numérica al final de cada barra
+    for barra, valor in zip(barras, df_imp["importance"]):
+        ax.text(
+            barra.get_width() + 0.002,
+            barra.get_y() + barra.get_height() / 2,
+            f"{valor:.3f}",
+            va="center",
+            ha="left",
+            fontsize=9,
+        )
+
+    ax.set_title("Importancia de Variables — Random Forest", fontsize=14)
+    ax.set_xlabel("Importancia")
+    ax.set_ylabel("")
+    ax.set_xlim(0, df_imp["importance"].max() * 1.18)
+
+    # Remover bordes superiores y derechos para un estilo más limpio
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    return fig
+
+
 def plot_model_results(y_test: pd.Series, y_pred: pd.Series) -> plt.Figure:
     """
     Plot actual vs. predicted values for a regression model.

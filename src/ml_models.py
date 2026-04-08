@@ -8,7 +8,8 @@ Espera el formato de contrato estándar producido por data_loader.
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, is_classifier
-from sklearn.cluster import KMeans
+from sklearn.cluster import DBSCAN, KMeans
+from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import (
@@ -308,11 +309,79 @@ def train_kmeans(
             "Se necesitan al menos tantas filas como clusters."
         )
 
-    # Entrenar el modelo KMeans
+    # Normalizar antes de KMeans para que columnas con escalas grandes (ej. fare, body)
+    # no dominen la distancia euclidiana y distorsionen los clusters
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(df_cluster)
+
+    # Entrenar el modelo KMeans sobre los datos normalizados
     kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init="auto")
-    etiquetas = kmeans.fit_predict(df_cluster)
+    etiquetas = kmeans.fit_predict(X_scaled)
+
+    # Guardar el scaler como atributo del modelo para usarlo en get_cluster_labels
+    kmeans.scaler_ = scaler
 
     return kmeans, etiquetas
+
+
+def train_dbscan(
+    data: dict,
+    eps: float = 1.2,
+    min_samples: int = 5,
+    numeric_columns: list[str] | None = None,
+) -> tuple[DBSCAN, np.ndarray]:
+    """
+    Fit a DBSCAN clustering model on numeric columns.
+
+    Data is normalized with StandardScaler before fitting so that eps is
+    expressed in units of standard deviations, making it dataset-agnostic.
+
+    Parameters
+    ----------
+    data : dict
+        Data contract dict with key 'df' (DataFrame).
+    eps : float
+        Maximum distance between two samples to be considered neighbours.
+        Applied after StandardScaler normalization. Default 0.5.
+    min_samples : int
+        Minimum number of samples in a neighbourhood to form a core point.
+        Default 5.
+    numeric_columns : list[str] or None
+        Columns to use for clustering. None uses all numeric columns.
+
+    Returns
+    -------
+    tuple
+        (dbscan_model, cluster_labels) — fitted DBSCAN and integer label array.
+        Noise points are labelled -1.
+    """
+    df = data["df"]
+
+    if numeric_columns is not None:
+        df_cluster = df[numeric_columns].select_dtypes(include=np.number)
+    else:
+        df_cluster = df.select_dtypes(include=np.number)
+
+    if df_cluster.empty:
+        raise ValueError("No hay columnas numéricas disponibles para clustering.")
+
+    # Drop columns with ≥50 % nulls
+    umbral_nulos = 0.5 * len(df_cluster)
+    df_cluster = df_cluster.loc[:, df_cluster.isnull().sum() < umbral_nulos]
+
+    if df_cluster.empty:
+        raise ValueError("Todas las columnas tienen más del 50% de nulos.")
+
+    df_cluster = df_cluster.fillna(df_cluster.mean(numeric_only=True))
+
+    # Normalize so eps is scale-independent
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(df_cluster)
+
+    dbscan = DBSCAN(eps=eps, min_samples=min_samples)
+    etiquetas = dbscan.fit_predict(X_scaled)
+
+    return dbscan, etiquetas
 
 
 def get_cluster_labels(
@@ -353,9 +422,15 @@ def get_cluster_labels(
     # Rellenar nulos restantes con la media para poder predecir en todas las filas
     df_cluster = df_cluster.fillna(df_cluster.mean(numeric_only=True))
 
+    # Aplicar el mismo StandardScaler usado durante el entrenamiento si está disponible
+    if hasattr(kmeans_model, "scaler_"):
+        X_predict = kmeans_model.scaler_.transform(df_cluster)
+    else:
+        X_predict = df_cluster.values
+
     # Predecir etiqueta de cluster para todas las filas
     etiquetas = np.full(len(df), np.nan)
-    etiquetas[:] = kmeans_model.predict(df_cluster)
+    etiquetas[:] = kmeans_model.predict(X_predict)
 
     df["cluster"] = etiquetas
     return df
