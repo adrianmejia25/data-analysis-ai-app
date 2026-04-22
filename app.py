@@ -21,7 +21,6 @@ from src.insights import (
     resumir_distribucion,
     resumir_modelo,
     resumir_outliers,
-    top_correlated_features,
 )
 from src.ml_models import (
     evaluate_model,
@@ -42,7 +41,6 @@ from src.visualization import (
     plot_correlation_heatmap,
     plot_distribution,
     plot_feature_importance,
-    plot_model_results,
     plot_scatter,
 )
 
@@ -218,7 +216,6 @@ def seccion_estadisticas(data: dict) -> None:
     else:
         try:
             corr_df = correlation_matrix(data)
-            st.dataframe(corr_df.style.background_gradient(cmap="coolwarm", axis=None), use_container_width=True)
             try:
                 for frase in resumir_correlaciones(corr_df):
                     st.info(frase)
@@ -457,29 +454,6 @@ def seccion_ml(data: dict) -> None:
         except Exception as e:
             st.error(f"Error al graficar importancia de variables: {e}")
 
-        # Gráfico: para clasificación binaria usar probabilidades vs valor real
-        st.subheader("Valores Reales vs. Predichos (test set)")
-        try:
-            proba = metricas.get("proba")
-            if es_clasificacion and proba is not None:
-                # Scatter: valor real (0/1) vs probabilidad de la clase positiva
-                y_scatter = pd.Series(proba, name="probabilidad_clase_positiva")
-                fig_pred = plot_model_results(y_test_stored, y_scatter)
-                st.caption("Eje X: valor real | Eje Y: probabilidad predicha de la clase positiva")
-            else:
-                fig_pred = plot_model_results(y_test_stored, y_pred_stored)
-            st.pyplot(fig_pred)
-        except Exception as e:
-            st.error(f"Error al graficar predicciones: {e}")
-
-        # Features más correlacionadas con el target
-        st.subheader("Features Más Correlacionadas con el Target")
-        try:
-            top_feat = top_correlated_features(data, target_column=target_col)
-            st.dataframe(top_feat, use_container_width=True)
-        except Exception as e:
-            st.error(f"Error al calcular correlaciones: {e}")
-
     # --- Clustering ---
     st.subheader("Clustering")
     metodo_clustering = st.selectbox(
@@ -596,8 +570,6 @@ def seccion_ml(data: dict) -> None:
             except Exception as e:
                 st.error(f"Error al calcular resumen de clusters: {e}")
 
-        st.write("**Dataset con etiquetas de cluster:**")
-        st.dataframe(df_clusters, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
